@@ -94,7 +94,7 @@ class DocumentEvaluation:
 class LLMEvaluator:
     """Evaluator using Azure OpenAI to assess document quality."""
     
-    EVALUATION_PROMPT = """You are an expert evaluator assessing document quality for use with Large Language Models (LLMs) and Retrieval-Augmented Generation (RAG) systems.
+    EVALUATION_PROMPT_TEMPLATE = """You are an expert evaluator assessing document quality for use with Large Language Models (LLMs) and Retrieval-Augmented Generation (RAG) systems.
 
 Evaluate the following document text on these criteria (score 0-5 for each):
 
@@ -106,20 +106,12 @@ Evaluate the following document text on these criteria (score 0-5 for each):
 6. **RAG Usability** (0-5): How useful would this be as context for a RAG system? Is it well-structured for retrieval?
 7. **Citation Quality** (0-5): Are sources, references, and citations properly included and formatted?
 
-Respond ONLY with a JSON object in this exact format:
-{
-  "relevance": <score>,
-  "factual_accuracy": <score>,
-  "clarity": <score>,
-  "hallucination": <score>,
-  "style_match": <score>,
-  "rag_usability": <score>,
-  "citation_quality": <score>
-}
+Respond ONLY with a JSON object with these exact keys: relevance, factual_accuracy, clarity, hallucination, style_match, rag_usability, citation_quality.
+Each value should be a number from 0 to 5.
 
 Document text to evaluate:
 
-{text}"""
+"""
     
     def __init__(self, config: AzureOpenAIConfig, temperature: float = 0.0, max_retries: int = 3):
         """
@@ -149,7 +141,7 @@ Document text to evaluate:
         Returns:
             DocumentEvaluation or None if evaluation fails
         """
-        prompt = self.EVALUATION_PROMPT.format(text=chunk.text)
+        prompt = self.EVALUATION_PROMPT_TEMPLATE + chunk.text
         
         for attempt in range(self.max_retries):
             try:
@@ -172,7 +164,19 @@ Document text to evaluate:
                 
                 # Parse response
                 content = response.choices[0].message.content
+                
+                # Clean content if needed (remove markdown code blocks)
+                if content.startswith('```'):
+                    # Remove markdown code block formatting
+                    lines = content.split('\n')
+                    lines = [l for l in lines if not l.startswith('```')]
+                    content = '\n'.join(lines).strip()
+                
                 data = json.loads(content)
+                
+                # Handle nested 'evaluation' key if present
+                if 'evaluation' in data and isinstance(data['evaluation'], dict):
+                    data = data['evaluation']
                 
                 return DocumentEvaluation.from_dict(data)
             
@@ -197,6 +201,11 @@ Document text to evaluate:
                     time.sleep(1)
                     continue
                 else:
+                    # Print actual content for debugging
+                    try:
+                        print(f"Debug - Response content: {content[:200]}")
+                    except:
+                        pass
                     raise Exception(f"API error after {self.max_retries} retries: {e}")
             
             except Exception as e:
@@ -228,7 +237,10 @@ Document text to evaluate:
                     evaluations_with_weights.append((evaluation, chunk.token_count))
             except Exception as e:
                 # Log but continue with other chunks
-                print(f"Warning: Failed to evaluate chunk {chunk.chunk_index + 1}/{chunk.total_chunks}: {e}")
+                print(f"\nWarning: Failed to evaluate chunk {chunk.chunk_index + 1}/{chunk.total_chunks}")
+                print(f"Error details: {str(e)}")
+                import traceback
+                traceback.print_exc()
         
         if not evaluations_with_weights:
             raise Exception("Failed to evaluate any chunks in the document")
